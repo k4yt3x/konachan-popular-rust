@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use chrono::Utc;
+use futures::future;
 use image::{imageops::FilterType, ImageError, ImageFormat};
 use reqwest::Client;
 use serde::Deserialize;
@@ -29,11 +30,12 @@ use teloxide::{
     RequestError,
 };
 use teloxide_core::adaptors::throttle::{Limits, Throttle};
+use tokio::{task, task::JoinHandle};
 
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 const MAX_IMAGE_SIZE: usize = 10 * 1024_usize.pow(2);
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct Post {
     id: u32,
     jpeg_url: String,
@@ -87,14 +89,23 @@ async fn get_konachan_popular() -> Result<Vec<Post>> {
 /// let image_bytes = download_image(&"https://example.com/example.png",
 /// &"https://example.com").await?
 /// ```
-async fn download_image(url: &String) -> Result<Vec<u8>, reqwest::Error> {
-    Ok(reqwest::Client::new()
-        .get(url)
+async fn download_post(config: Config, post: Post) -> Result<Vec<u8>> {
+    let original_image = reqwest::Client::new()
+        .get(&post.jpeg_url)
         .send()
         .await?
         .bytes()
         .await?
-        .to_vec())
+        .to_vec();
+
+    Ok(resize_image(
+        &config,
+        original_image,
+        post.id,
+        post.jpeg_width,
+        post.jpeg_height,
+    )
+    .await?)
 }
 
 /// resize an image into a size/dimension acceptable by
@@ -192,24 +203,14 @@ async fn resize_image(
 /// # Errors
 ///
 /// any error that implements the Error trait
-async fn send_posts<'a>(config: Config, bot: Throttle<Bot>, posts: &[Post]) -> Result<()> {
+async fn send_posts<'a>(config: Config, bot: Throttle<Bot>, posts: &[Vec<u8>]) -> Result<()> {
     // holds all InputMedia enums for sendMediaGroup
     let mut images = Vec::new();
 
     // add each manga into images
     for post in posts {
-        info!(config.logger, "Retrieving post: id={}", post.id);
-        let original_image = download_image(&post.jpeg_url).await?;
-        let image_bytes = resize_image(
-            &config,
-            original_image,
-            post.id,
-            post.jpeg_width,
-            post.jpeg_height,
-        )
-        .await?;
         images.push(InputMedia::Photo(InputMediaPhoto {
-            media: InputFile::memory(image_bytes),
+            media: InputFile::memory(post.clone()),
             caption: None,
             parse_mode: None,
             caption_entities: None,
@@ -283,15 +284,26 @@ pub async fn run(config: Config) -> Result<()> {
     let today = Utc::now().format("%B %-d, %Y").to_string();
     info!(config.logger, "Fetching posts: date={}", today);
 
+    // start downloading all posts
+    let mut download_image_tasks: Vec<JoinHandle<Result<Vec<u8>>>> = vec![];
+    for post in get_konachan_popular().await? {
+        download_image_tasks.push(task::spawn(download_post(config.clone(), post.clone())));
+    }
+
+    // save all downloaded posts into memory
+    let mut posts = Vec::new();
+    for result in future::join_all(download_image_tasks).await {
+        match result? {
+            Err(error) => error!(config.logger, "Failed to download post: message={}", error),
+            Ok(post) => posts.push(post),
+        }
+    }
+
     // send today's date
     bot.send_message(config.chat_id, today).await?;
 
     // send posts in groups of 10 images
-    for group in get_konachan_popular()
-        .await?
-        .chunks(10)
-        .collect::<Vec<&[Post]>>()
-    {
+    for group in posts.chunks(10) {
         if let Err(error) = send_posts(config.clone(), bot.clone(), group).await {
             error!(config.logger, "Failed sending posts: message={}", error);
         }
