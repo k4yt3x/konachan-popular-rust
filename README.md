@@ -13,7 +13,7 @@ sudo podman run -e TELOXIDE_TOKEN=$TELOXIDE_TOKEN -e TELOXIDE_CHAT_ID=$TELOXIDE_
 You can pass the settings either through environment variables or arguments. For details, see the help page of the binary:
 
 ```shell
-sudo podman run ghcr.io/k4yt3x/pixivdaily:1.0.0 -h
+sudo podman run ghcr.io/k4yt3x/konachan-popular:1.0.0 -h
 ```
 
 ## Run From Source
