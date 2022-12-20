@@ -279,12 +279,14 @@ pub async fn run(config: Config) -> Result<()> {
         .build()?;
     let bot = Bot::with_client(&config.token, client).throttle(Limits::default());
 
-    info!(
-        config.logger,
-        "Fetching posts: date={}",
-        Utc::now().format("%B %-d, %Y")
-    );
+    // log today's date in the console
+    let today = Utc::now().format("%B %-d, %Y").to_string();
+    info!(config.logger, "Fetching posts: date={}", today);
 
+    // send today's date
+    bot.send_message(config.chat_id, today).await?;
+
+    // send posts in groups of 10 images
     for group in get_konachan_popular()
         .await?
         .chunks(10)
