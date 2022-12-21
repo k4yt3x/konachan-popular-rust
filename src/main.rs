@@ -35,10 +35,10 @@ use slog::{o, Drain};
 /// ```
 fn parse() -> Result<Config> {
     // parse command line arguments
-    let matches = Command::new("pixivdaily")
+    let matches = Command::new("konachan-popular")
         .version(VERSION)
         .author("K4YT3X <i@k4yt3x.com>")
-        .about("A Telegram bot that posts Pixiv's daily rankings for @pixiv_daily")
+        .about("A Telegram bot that posts Konachan popular posts for @KonachanPopular")
         .arg(
             Arg::new("chat-id")
                 .short('c')
