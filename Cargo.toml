@@ -33,6 +33,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 slog = "2.7"
 slog-term = "2.9"
-teloxide = { version = "0.11", features = ["auto-send", "macros", "throttle"] }
+teloxide = { version = "0.11", features = ["macros", "throttle"] }
 teloxide-core = "0.8"
 tokio = { version = "1.23", features = ["full"] }
