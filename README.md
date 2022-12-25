@@ -8,16 +8,16 @@ This repository contains the source code of the backend program running the Tele
 
 ## Run in a Container
 
-You will obviously first have to have an OCI-compatible container runtime like Podman or Docker installed. Then, pull and run the container:
+You will obviously first have to have an OCI-compatible container runtime like Podman or Docker installed. Then, pull and run the container (it's recommended to replace the `latest` tag with a specific version number for production use):
 
 ```shell
-sudo podman run -e TELOXIDE_TOKEN=$TELOXIDE_TOKEN -e TELOXIDE_CHAT_ID=$TELOXIDE_CHAT_ID ghcr.io/k4yt3x/konachan-popular:1.1.0
+sudo podman run -e TELOXIDE_TOKEN=$TELOXIDE_TOKEN -e TELOXIDE_CHAT_ID=$TELOXIDE_CHAT_ID ghcr.io/k4yt3x/konachan-popular:latest
 ```
 
 You can pass the settings either through environment variables or arguments. For details, see the help page of the binary:
 
 ```shell
-sudo podman run ghcr.io/k4yt3x/konachan-popular:1.1.0 -h
+sudo podman run ghcr.io/k4yt3x/konachan-popular:latest -h
 ```
 
 ## Run From Source
