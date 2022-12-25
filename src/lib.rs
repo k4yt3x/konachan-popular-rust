@@ -14,36 +14,30 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
-use std::{
-    io::{Cursor, Read, Seek, SeekFrom},
-    time::Duration,
-};
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::Utc;
-use futures::future;
-use image::{imageops::FilterType, ImageError, ImageFormat};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json;
 use slog::{debug, error, info, warn};
 use teloxide::{
+    adaptors::throttle::{Limits, Throttle},
     prelude::*,
     types::{ChatId, InputFile, InputMedia, InputMediaPhoto},
-    RequestError,
 };
-use teloxide_core::adaptors::throttle::{Limits, Throttle};
-use tokio::{task, task::JoinHandle};
 
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-const MAX_IMAGE_SIZE: usize = 10 * 1024_usize.pow(2);
+const NUMBER_OF_RETRIES: u8 = 5;
+const TELEGRAM_MAX_DOWNLOAD_SIZE: u64 = 5 * 1024_u64.pow(2);
 
 #[derive(Clone, Debug, Deserialize)]
 struct Post {
-    id: u32,
+    file_size: u64,
     jpeg_url: String,
-    jpeg_width: u32,
-    jpeg_height: u32,
+    sample_file_size: u64,
+    sample_url: String,
 }
 
 /// configs passed to the run function
@@ -64,6 +58,11 @@ impl Config {
     }
 }
 
+/// retrieve the list of popular Konachan posts
+///
+/// # Errors
+///
+/// anyhow::Error
 async fn get_konachan_popular() -> Result<Vec<Post>> {
     let posts: Vec<Post> = serde_json::from_str(
         &reqwest::get("https://konachan.com/post/popular_recent.json")
@@ -75,194 +74,56 @@ async fn get_konachan_popular() -> Result<Vec<Post>> {
     Ok(posts)
 }
 
-/// download an image into memory into Vec<u8>
-///
-/// # Arguments
-///
-/// * `url` - URL of the image
-/// * `referer` - Referer header to set
-///
-/// # Errors
-///
-/// reqwest errors
-///
-/// # Examples
-///
-/// ```
-/// let image_bytes = download_image(&"https://example.com/example.png",
-/// &"https://example.com").await?
-/// ```
-async fn download_post(config: Config, post: Post) -> Result<Vec<u8>> {
-    let original_image = reqwest::Client::new()
-        .get(&post.jpeg_url)
-        .send()
-        .await?
-        .bytes()
-        .await?
-        .to_vec();
-
-    Ok(resize_image(
-        &config,
-        original_image,
-        post.id,
-        post.jpeg_width,
-        post.jpeg_height,
-    )
-    .await?)
-}
-
-/// resize an image into a size/dimension acceptable by
-/// Telegram's API
-///
-/// # Arguments
-///
-/// * `config` - an instance of Config
-/// * `image_bytes` - raw input image bytes
-/// * `id` - illustration ID
-/// * `original_width` - original image width
-/// * `original_height` - original image height
-///
-/// # Errors
-///
-/// image::ImageError
-async fn resize_image(
-    config: &Config,
-    image_bytes: Vec<u8>,
-    id: u32,
-    original_width: u32,
-    original_height: u32,
-) -> Result<Vec<u8>, ImageError> {
-    // if image is already small enough, return original image
-    if image_bytes.len() <= MAX_IMAGE_SIZE {
-        return Ok(image_bytes);
-    }
-    info!(config.logger, "Resizing oversized image: id={}", id);
-
-    // this is a very rough guess
-    // could be improved in the future
-    let guessed_ratio = (MAX_IMAGE_SIZE as f32 / image_bytes.len() as f32).sqrt();
-    let mut target_width = (original_width as f32 * guessed_ratio) as u32;
-    let mut target_height = (original_height as f32 * guessed_ratio) as u32;
-    debug!(
-        config.logger,
-        "Resizing parameters: r={} w={} h={}", guessed_ratio, target_width, target_height
-    );
-
-    // Telegram API requires width + height <= 10000
-    if target_width + target_height > 10000 {
-        let target_ratio = 10000.0 / (target_width + target_height) as f32;
-        target_width = (target_width as f32 * target_ratio).floor() as u32;
-        target_height = (target_height as f32 * target_ratio).floor() as u32;
-        debug!(
-            config.logger,
-            "Additional resizing parameters: r={} w={} h={}",
-            target_ratio,
-            target_width,
-            target_height
-        );
-    }
-
-    // load the image from memory into ImageBuffer
-    let mut dynamic_image = image::load_from_memory(&image_bytes)?;
-
-    loop {
-        // downsize the image with Lanczos3
-        dynamic_image = dynamic_image.resize(target_width, target_height, FilterType::Lanczos3);
-
-        // encode raw bytes into PNG bytes
-        let mut png_bytes_cursor = Cursor::new(vec![]);
-        dynamic_image.write_to(&mut png_bytes_cursor, ImageFormat::Png)?;
-        png_bytes_cursor.seek(SeekFrom::Start(0))?;
-
-        // read all bytes from cursor
-        let mut png_bytes = Vec::new();
-        png_bytes_cursor.read_to_end(&mut png_bytes)?;
-
-        // return the image if it is small enough
-        if png_bytes.len() < MAX_IMAGE_SIZE {
-            info!(
-                config.logger,
-                "Final size: size={}MiB",
-                png_bytes.len() as f32 / 1024_f32.powf(2.0)
-            );
-            return Ok(png_bytes);
-        }
-
-        // shrink image by another 20% if the previous round is not enough
-        debug!(
-            config.logger,
-            "Image too large: size={}MiB; additional resizing required",
-            png_bytes.len() as f32 / 1024_f32.powf(2.0)
-        );
-        target_width = (target_width as f32 * 0.8) as u32;
-        target_height = (target_height as f32 * 0.8) as u32;
-    }
-}
-
 /// send an illustration to the Telegram chat
 ///
 /// # Arguments
 ///
 /// * `config` - an instance of Config
 /// * `bot` - an instance of Throttle<Bot>
-/// * `illust` - an Illust struct which represents an illustration
-/// * `send_sleep` - global sleep timer
+/// * `posts` - a Vec of posts to send in one media group
 ///
 /// # Errors
 ///
 /// any error that implements the Error trait
-async fn send_posts<'a>(config: Config, bot: Throttle<Bot>, posts: &[Vec<u8>]) -> Result<()> {
-    // holds all InputMedia enums for sendMediaGroup
-    let mut images = Vec::new();
-
-    // add each manga into images
-    for post in posts {
-        images.push(InputMedia::Photo(InputMediaPhoto {
-            media: InputFile::memory(post.clone()),
-            caption: None,
-            parse_mode: None,
-            caption_entities: None,
-        }));
-    }
-
-    // contains the final result
-    let mut result: Option<Result<Vec<Message>, RequestError>> = None;
-
-    // retry up to 10 times since the send attempt might run into temporary errors like
+async fn send_posts(config: Config, bot: Throttle<Bot>, posts: Vec<InputMedia>) -> Result<()> {
+    // retry up to 5 times since the send attempt might run into temporary errors like
     // Api(Unknown("Bad Request: group send failed"))
-    for attempt in 0..10 {
+    for attempt in 0..NUMBER_OF_RETRIES {
         // send the photo with the caption
         info!(config.logger, "Sending posts: attempt={}", attempt);
-        result = Some(
-            bot.send_media_group(config.chat_id, images.clone())
-                .disable_notification(true)
-                .await,
-        );
+        let result = bot
+            .send_media_group(config.chat_id, posts.clone())
+            .disable_notification(true)
+            .await;
 
-        // if an error has occurred, print the error's message
-        if let Some(Err(error)) = &result {
-            warn!(
-                config.logger,
-                "Temporary error sending artwork: message={:?}", error
-            );
-        }
-        // break out of the loop if the send operation has succeeded
-        else {
-            debug!(
-                config.logger,
-                "Successfully sent artwork: attempt={}", attempt
-            );
-            break;
+        match result {
+            // if an error has occurred, print the error's message
+            Err(error) => {
+                warn!(
+                    config.logger,
+                    "Temporary error sending artwork: message={:?}", error
+                );
+
+                // if the last attempt still fails, return the error
+                if attempt == NUMBER_OF_RETRIES - 1 {
+                    return Err(error.into());
+                }
+            }
+            // return if the send operation has succeeded
+            Ok(messages) => {
+                debug!(
+                    config.logger,
+                    "Successfully sent artwork: attempt={}", attempt
+                );
+                for message in messages {
+                    debug!(config.logger, "API response: message={:#?}", message);
+                }
+                return Ok(());
+            }
         }
     }
 
-    // return the error if the send operation has not succeeded after 10 attempts
-    if let Some(Err(error)) = result {
-        Err(error.into())
-    }
-    else {
-        Ok(())
-    }
+    Err(anyhow!("Sending attempt iteration error"))
 }
 
 /// entry point for the functional part of this program
@@ -293,19 +154,26 @@ pub async fn run(config: Config) -> Result<()> {
     let today = Utc::now().format("%B %-d, %Y").to_string();
     info!(config.logger, "Fetching posts: date={}", today);
 
-    // start downloading all posts
-    let mut download_image_tasks: Vec<JoinHandle<Result<Vec<u8>>>> = vec![];
-    for post in get_konachan_popular().await? {
-        download_image_tasks.push(task::spawn(download_post(config.clone(), post.clone())));
-    }
-
     // save all downloaded posts into memory
     let mut posts = Vec::new();
-    for result in future::join_all(download_image_tasks).await {
-        match result? {
-            Err(error) => error!(config.logger, "Failed to download post: message={}", error),
-            Ok(post) => posts.push(post),
+    for post in get_konachan_popular().await? {
+        // if the original file's size is larger than 5 MiB
+        // Telegram will not be able to download it
+        let url = if post.file_size < TELEGRAM_MAX_DOWNLOAD_SIZE {
+            post.jpeg_url
         }
+        // if the sample image's size is within limits, use the sample image
+        else if post.sample_file_size < TELEGRAM_MAX_DOWNLOAD_SIZE {
+            post.sample_url
+        }
+        // skip if the sample image's size also exceeds the max allowable size
+        else {
+            continue;
+        };
+
+        posts.push(InputMedia::Photo(InputMediaPhoto::new(InputFile::url(
+            url.parse()?,
+        ))));
     }
 
     // send today's date
@@ -313,7 +181,7 @@ pub async fn run(config: Config) -> Result<()> {
 
     // send posts in groups of 10 images
     for group in posts.chunks(10) {
-        if let Err(error) = send_posts(config.clone(), bot.clone(), group).await {
+        if let Err(error) = send_posts(config.clone(), bot.clone(), group.to_vec()).await {
             error!(config.logger, "Failed sending posts: message={}", error);
         }
     }
