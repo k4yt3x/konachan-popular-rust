@@ -14,7 +14,10 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
-use std::time::Duration;
+use std::{
+    io::{Cursor, Read},
+    time::Duration,
+};
 
 use anyhow::Result;
 use chrono::Utc;
@@ -167,8 +170,12 @@ async fn resize_image(
         dynamic_image = dynamic_image.resize(target_width, target_height, FilterType::Lanczos3);
 
         // encode raw bytes into PNG bytes
-        let mut png_bytes = vec![];
-        dynamic_image.write_to(&mut png_bytes, ImageFormat::Png)?;
+        let mut png_bytes_cursor = Cursor::new(vec![]);
+        dynamic_image.write_to(&mut png_bytes_cursor, ImageFormat::Png)?;
+
+        // read all bytes from cursor
+        let mut png_bytes = Vec::new();
+        png_bytes_cursor.read_to_end(&mut png_bytes)?;
 
         // return the image if it is small enough
         if png_bytes.len() < MAX_IMAGE_SIZE {

@@ -17,9 +17,21 @@
 use std::{process, sync::Mutex};
 
 use anyhow::Result;
-use clap::{Arg, Command};
-use konachan_popular::{run, Config, VERSION};
+use clap::Parser;
+use konachan_popular::{run, Config};
 use slog::{o, Drain};
+
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Telegram bot API token
+    #[arg(short, long, env = "TELOXIDE_TOKEN")]
+    token: String,
+
+    /// ID of the chat to send messages to
+    #[arg(short, long, env = "TELOXIDE_CHAT_ID")]
+    chat_id: i64,
+}
 
 /// parse the command line arguments and return a new
 /// Config instance
@@ -34,30 +46,7 @@ use slog::{o, Drain};
 /// let config = parse()?;
 /// ```
 fn parse() -> Result<Config> {
-    // parse command line arguments
-    let matches = Command::new("konachan-popular")
-        .version(VERSION)
-        .author("K4YT3X <i@k4yt3x.com>")
-        .about("A Telegram bot that posts Konachan popular posts for @KonachanPopular")
-        .arg(
-            Arg::new("chat-id")
-                .short('c')
-                .long("chat-id")
-                .value_name("CHATID")
-                .help("chat ID to send photos to")
-                .takes_value(true)
-                .env("TELOXIDE_CHAT_ID"),
-        )
-        .arg(
-            Arg::new("token")
-                .short('t')
-                .long("token")
-                .value_name("TOKEN")
-                .help("Telegram bot token")
-                .takes_value(true)
-                .env("TELOXIDE_TOKEN"),
-        )
-        .get_matches();
+    let args = Args::parse();
 
     // assign command line values to variables
     Ok(Config::new(
@@ -66,8 +55,8 @@ fn parse() -> Result<Config> {
             let drain = Mutex::new(slog_term::FullFormat::new(decorator).build()).fuse();
             slog::Logger::root(drain, o!())
         },
-        matches.value_of_t_or_exit("token"),
-        matches.value_of_t_or_exit("chat-id"),
+        args.token,
+        args.chat_id,
     ))
 }
 
