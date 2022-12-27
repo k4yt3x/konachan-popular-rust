@@ -25,11 +25,11 @@ use slog::{o, Drain};
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Telegram bot API token
-    #[arg(short, long, env = "TELOXIDE_TOKEN")]
+    #[arg(short, long, env = "TELEGRAM_BOT_TOKEN")]
     token: String,
 
     /// ID of the chat to send messages to
-    #[arg(short, long, env = "TELOXIDE_CHAT_ID")]
+    #[arg(short, long, env = "TELEGRAM_CHAT_ID")]
     chat_id: i64,
 }
 
