@@ -18,15 +18,15 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
+use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json;
-use slog::{debug, error, info, warn};
 use teloxide::{
     adaptors::throttle::{Limits, Throttle},
     prelude::*,
-    types::{ChatId, InputFile, InputMedia, InputMediaPhoto},
+    types::{InputFile, InputMedia, InputMediaPhoto},
 };
+use tracing::{debug, error, info, warn};
 
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 const NUMBER_OF_RETRIES: u8 = 5;
@@ -43,15 +43,13 @@ struct Post {
 /// configs passed to the run function
 #[derive(Clone)]
 pub struct Config {
-    logger: slog::Logger,
     token: String,
     chat_id: ChatId,
 }
 
 impl Config {
-    pub fn new(logger: slog::Logger, token: String, chat_id: i64) -> Config {
+    pub fn new(token: String, chat_id: i64) -> Config {
         Config {
-            logger,
             token,
             chat_id: ChatId(chat_id),
         }
@@ -88,35 +86,40 @@ async fn get_konachan_popular() -> Result<Vec<Post>> {
 async fn send_posts(config: Config, bot: Throttle<Bot>, posts: Vec<InputMedia>) -> Result<()> {
     // retry up to 5 times since the send attempt might run into temporary errors like
     // Api(Unknown("Bad Request: group send failed"))
+    let mut posts_local = posts.clone();
     for attempt in 0..NUMBER_OF_RETRIES {
         // send the photo with the caption
-        info!(config.logger, "Sending posts: attempt={}", attempt);
+        info!("Sending posts: attempt={}", attempt);
         let result = bot
-            .send_media_group(config.chat_id, posts.clone())
+            .send_media_group(config.chat_id, posts_local.clone())
             .disable_notification(true)
             .await;
 
         match result {
             // if an error has occurred, print the error's message
             Err(error) => {
-                warn!(
-                    config.logger,
-                    "Temporary error sending artwork: message={:?}", error
-                );
+                warn!("Temporary error sending artwork: message={:?}", error);
+
+                let error_index_regex = Regex::new(r"#(\d+)")?;
+                if let Some(captures) = error_index_regex.captures(error.to_string().as_str()) {
+                    let index = captures.get(1).unwrap().as_str().parse::<usize>()? - 1;
+                    warn!("Removing failed post: index={}", index);
+                    posts_local.remove(index);
+                }
 
                 // if the last attempt still fails, return the error
-                if attempt == NUMBER_OF_RETRIES - 1 {
+                if attempt >= NUMBER_OF_RETRIES - 1 {
                     return Err(error.into());
                 }
+
+                // sleep for one second
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
             // return if the send operation has succeeded
             Ok(messages) => {
-                debug!(
-                    config.logger,
-                    "Successfully sent artwork: attempt={}", attempt
-                );
+                info!("Successfully sent artwork: attempt={}", attempt);
                 for message in messages {
-                    debug!(config.logger, "API response: message={:#?}", message);
+                    debug!("API response: message={:#?}", message);
                 }
                 return Ok(());
             }
@@ -137,7 +140,6 @@ async fn send_posts(config: Config, bot: Throttle<Bot>, posts: Vec<InputMedia>) 
 /// any error that implements the Error trait
 pub async fn run(config: Config) -> Result<()> {
     info!(
-        config.logger,
         "KonachanPopular bot {version} initializing",
         version = VERSION
     );
@@ -152,11 +154,36 @@ pub async fn run(config: Config) -> Result<()> {
 
     // log today's date in the console
     let today = Utc::now().format("%B %-d, %Y").to_string();
-    info!(config.logger, "Fetching posts: date={}", today);
+    info!("Fetching posts: date={}", today);
+
+    // fetch the list of popular Konachan posts
+    let mut popular_posts: Vec<Post> = Vec::new();
+    for attempt in 0..NUMBER_OF_RETRIES {
+        match get_konachan_popular().await {
+            Ok(popular) => {
+                popular_posts = popular;
+                break;
+            }
+            Err(error) => {
+                warn!(
+                    "Failed to fetch today's popular posts: attempt={}: message={}",
+                    attempt, error
+                );
+
+                // if the last attempt still fails, return the error
+                if attempt >= NUMBER_OF_RETRIES - 1 {
+                    return Err(error);
+                }
+
+                // sleep for one second
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
 
     // save all downloaded posts into memory
     let mut posts = Vec::new();
-    for post in get_konachan_popular().await? {
+    for post in popular_posts {
         // if the original file's size is larger than 5 MiB
         // Telegram will not be able to download it
         let url = if post.file_size < TELEGRAM_MAX_DOWNLOAD_SIZE {
@@ -182,7 +209,7 @@ pub async fn run(config: Config) -> Result<()> {
     // send posts in groups of 10 images
     for group in posts.chunks(10) {
         if let Err(error) = send_posts(config.clone(), bot.clone(), group.to_vec()).await {
-            error!(config.logger, "Failed sending posts: message={}", error);
+            error!("Failed sending posts: message={}", error);
         }
     }
 

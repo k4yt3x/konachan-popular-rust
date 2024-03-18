@@ -9,7 +9,7 @@ license = "GPL-2.0-only"
 name = "konachan-popular"
 readme = "README.md"
 repository = "https://github.com/k4yt3x/konachan-popular-rust"
-version = "1.2.3"
+version = "1.3.0"
 
 [[bin]]
 name = "konachan-popular"
@@ -26,10 +26,11 @@ anyhow = "1.0"
 chrono = "0.4"
 clap = { version = "4.0", features = ["derive", "env"] }
 openssl = { version = "0.10", features = ["vendored"] }
+regex = "1.10"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-slog = "2.7"
-slog-term = "2.9"
-teloxide = { version = "0.11", features = ["macros", "throttle"] }
+teloxide = { version = "0.12", features = ["macros", "throttle"] }
 tokio = { version = "1.23", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"

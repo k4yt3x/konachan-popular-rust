@@ -14,12 +14,12 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
-use std::{process, sync::Mutex};
+use std::process;
 
 use anyhow::Result;
 use clap::Parser;
 use konachan_popular::{run, Config};
-use slog::{o, Drain};
+use tracing::{error, Level};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -49,30 +49,24 @@ fn parse() -> Result<Config> {
     let args = Args::parse();
 
     // assign command line values to variables
-    Ok(Config::new(
-        {
-            let decorator = slog_term::TermDecorator::new().build();
-            let drain = Mutex::new(slog_term::FullFormat::new(decorator).build()).fuse();
-            slog::Logger::root(drain, o!())
-        },
-        args.token,
-        args.chat_id,
-    ))
+    Ok(Config::new(args.token, args.chat_id))
 }
 
 /// program entry point
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+
     // parse command line arguments into Config
     match parse() {
         Err(e) => {
-            eprintln!("Program initialization error: {}", e);
+            error!("Program initialization error: {}", e);
             process::exit(1);
         }
         Ok(config) => process::exit(match run(config).await {
             Ok(_) => 0,
             Err(e) => {
-                eprintln!("Error: {}", e);
+                error!("Unexpected error: {}", e);
                 1
             }
         }),
