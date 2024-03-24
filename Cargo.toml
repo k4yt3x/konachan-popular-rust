@@ -9,7 +9,7 @@ license = "GPL-2.0-only"
 name = "konachan-popular"
 readme = "README.md"
 repository = "https://github.com/k4yt3x/konachan-popular-rust"
-version = "1.3.0"
+version = "1.4.0"
 
 [[bin]]
 name = "konachan-popular"

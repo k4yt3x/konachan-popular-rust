@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 K4YT3X.
+ * Copyright (C) 2021-2024 K4YT3X.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -117,7 +117,6 @@ async fn send_posts(config: Config, bot: Throttle<Bot>, posts: Vec<InputMedia>) 
             }
             // return if the send operation has succeeded
             Ok(messages) => {
-                info!("Successfully sent artwork: attempt={}", attempt);
                 for message in messages {
                     debug!("API response: message={:#?}", message);
                 }
@@ -153,7 +152,8 @@ pub async fn run(config: Config) -> Result<()> {
     let bot = Bot::with_client(&config.token, client).throttle(Limits::default());
 
     // log today's date in the console
-    let today = Utc::now().format("%B %-d, %Y").to_string();
+    let now = Utc::now();
+    let today = now.format("%B %-d, %Y").to_string();
     info!("Fetching posts: date={}", today);
 
     // fetch the list of popular Konachan posts
@@ -183,15 +183,15 @@ pub async fn run(config: Config) -> Result<()> {
 
     // save all downloaded posts into memory
     let mut posts = Vec::new();
-    for post in popular_posts {
+    for post in &popular_posts {
         // if the original file's size is larger than 5 MiB
         // Telegram will not be able to download it
         let url = if post.file_size < TELEGRAM_MAX_DOWNLOAD_SIZE {
-            post.jpeg_url
+            post.jpeg_url.clone()
         }
         // if the sample image's size is within limits, use the sample image
         else if post.sample_file_size < TELEGRAM_MAX_DOWNLOAD_SIZE {
-            post.sample_url
+            post.sample_url.clone()
         }
         // skip if the sample image's size also exceeds the max allowable size
         else {
@@ -203,13 +203,30 @@ pub async fn run(config: Config) -> Result<()> {
         ))));
     }
 
+    // get image links
+    let image_links = popular_posts
+        .iter()
+        .map(|post| post.jpeg_url.clone())
+        .collect::<Vec<String>>()
+        .join("\n");
+
     // send today's date
-    bot.send_message(config.chat_id, today).await?;
+    bot.send_document(
+        config.chat_id,
+        InputFile::memory(image_links)
+            .file_name(format!("{}_links.txt", now.format("%Y-%m-%d").to_string())),
+    )
+    .caption(&today)
+    .await?;
 
     // send posts in groups of 10 images
-    for group in posts.chunks(10) {
+    for (batch, group) in posts.chunks(10).enumerate() {
+        info!("Sending posts: batch={}", batch);
         if let Err(error) = send_posts(config.clone(), bot.clone(), group.to_vec()).await {
-            error!("Failed sending posts: message={}", error);
+            error!("Failed to send posts: batch={} message={}", batch, error);
+        }
+        else {
+            info!("Successfully sent posts: batch={}", batch);
         }
     }
 
